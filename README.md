@@ -1,3 +1,25 @@
+Fork Featuring NotebookLM-Style Dialogue Generation
+
+This fork introduces functionality for generating dialogue in a style similar to NotebookLM. A significant portion of the code has been adapted from the following source:
+https://github.com/nari-labs/dia/issues/35.
+
+Although there is no limit to the total length of an episode, a single speaker pair cannot exceed 20 seconds. Additionally, the system might occasionally omit the last few words spoken by a speaker.
+
+How to Run the Application
+
+1. Set Up the Environment
+Make sure you have created and activated the required environment for this project.
+
+2. Start the Gradio App
+Launch the Gradio application by running the following command:
+```
+python App-LongGeneration.py
+```
+
+https://github.com/user-attachments/assets/fa4a429b-1d1a-454a-a4a4-2d56fcf10909
+
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 <p align="center">
 <a href="https://github.com/nari-labs/dia">
 <img src="./dia/static/images/banner.png">
