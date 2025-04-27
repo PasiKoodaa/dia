@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from dia.model import Dia
 from rich import print as printr
 from rich.console import Console
+from scipy import signal
 
 console = Console()
 
@@ -273,6 +274,58 @@ def generate_with_retry(model, chunk, audio_prompt, args, max_retries=2):
         
     return audio
 
+def apply_compression(audio, threshold=-20, ratio=4, attack=0.01, release=0.1):
+    """
+    Apply dynamic range compression to audio
+    
+    Args:
+        audio (numpy.ndarray): Input audio signal
+        threshold (float): Threshold in dB above which compression is applied
+        ratio (float): Compression ratio (higher means more compression)
+        attack (float): Attack time in seconds
+        release (float): Release time in seconds
+        
+    Returns:
+        numpy.ndarray: Compressed audio
+    """
+    # Convert threshold from dB to linear
+    threshold_linear = 10 ** (threshold / 20.0)
+    
+    # Calculate envelope of signal
+    abs_signal = np.abs(audio)
+    
+    # Create attack and release filters
+    sample_rate = 44100  # Standard for Dia output
+    attack_samples = int(attack * sample_rate)
+    release_samples = int(release * sample_rate)
+    
+    # Simple envelope follower
+    env = np.zeros_like(abs_signal)
+    for i in range(1, len(abs_signal)):
+        if abs_signal[i] > env[i-1]:
+            # Attack
+            env[i] = abs_signal[i] if attack_samples <= 1 else env[i-1] + (abs_signal[i] - env[i-1]) / attack_samples
+        else:
+            # Release
+            env[i] = abs_signal[i] if release_samples <= 1 else env[i-1] + (abs_signal[i] - env[i-1]) / release_samples
+    
+    # Apply compression where envelope exceeds threshold
+    gain = np.ones_like(audio)
+    mask = env > threshold_linear
+    gain[mask] = (threshold_linear + (env[mask] - threshold_linear) / ratio) / env[mask]
+    
+    # Apply gain
+    compressed = audio * gain
+    
+    # Normalize to prevent clipping
+    max_val = np.max(np.abs(compressed))
+    if max_val > 0.95:  # Allow some headroom
+        normalized = compressed * (0.95 / max_val)
+    else:
+        normalized = compressed
+    
+    return normalized
+
 class Args:
     """Simple class to hold arguments for the model."""
     def __init__(self, **kwargs):
@@ -381,7 +434,7 @@ def generate_audio(
         output.append(f"Model loaded in {time.time() - start_time:.2f} seconds")
     except Exception as e:
         output.append(f"Error loading model: {e}")
-        return "\n".join(output), None
+        return "\n".join(output), None, None
     
     # Set up arguments
     args = Args(
@@ -396,15 +449,18 @@ def generate_audio(
     
     # Generate audio for each chunk
     tmp_files = []
+    compressed_tmp_files = []
     output.append(f"Generating audio for each chunk...")
     total_start = time.time()
     
     for i, (chunk, silence_flag) in enumerate(chunks):
         chunk_file = chunks_dir / f"chunk_{i:03d}.wav"
+        compressed_chunk_file = chunks_dir / f"chunk_{i:03d}_compressed.wav"
         tmp_files.append(chunk_file)
+        compressed_tmp_files.append(compressed_chunk_file)
         
         # Update progress
-        progress((i / len(chunks)) * 0.8 + 0.1, desc=f"Processing chunk {i+1}/{len(chunks)}")
+        progress((i / len(chunks)) * 0.7 + 0.1, desc=f"Processing chunk {i+1}/{len(chunks)}")
         
         # Print chunk info
         output.append(f"\nChunk {i+1}/{len(chunks)}")
@@ -436,8 +492,12 @@ def generate_audio(
             if silence > 0 and silence_flag:
                 audio = add_silence(audio, silence)
             
-            # Save chunk file
+            # Save original chunk file
             sf.write(chunk_file, audio, 44100)
+            
+            # Apply compression to audio and save compressed version
+            compressed_audio = apply_compression(audio, threshold=-20, ratio=4)
+            sf.write(compressed_chunk_file, compressed_audio, 44100)
             
             # Generation statistics
             minutes, seconds = get_duration(start_time)
@@ -450,34 +510,47 @@ def generate_audio(
             output.append(f"Error processing chunk {i+1}: {e}")
     
     # Combine all audio files
-    progress(0.9, desc="Combining audio segments")
+    progress(0.8, desc="Combining audio segments")
     output.append(f"Combining {len(tmp_files)} audio segments...")
     all_audio = []
+    all_compressed_audio = []
     
-    for tmp_file in tmp_files:
+    for tmp_file, compressed_file in zip(tmp_files, compressed_tmp_files):
         if tmp_file.exists():
             audio, sr = sf.read(tmp_file)
             all_audio.append(audio)
+        
+        if compressed_file.exists():
+            compressed, sr = sf.read(compressed_file)
+            all_compressed_audio.append(compressed)
     
     if not all_audio:
         output.append("Error: No audio was generated")
-        return "\n".join(output), None
+        return "\n".join(output), None, None
     
-    # Concatenate and save the final output
+    # Concatenate and save the final outputs
     final_audio = np.concatenate(all_audio)
+    final_compressed_audio = np.concatenate(all_compressed_audio)
     
-    # Create final output file
+    # Create output directory if it doesn't exist
     output_dir = app_dir / "output"
     os.makedirs(output_dir, exist_ok=True)
+    
+    # Save original audio
     output_file = output_dir / "final_output.wav"
     output.append(f"Saving final audio (duration: {len(final_audio)/44100:.2f} seconds)")
     sf.write(output_file, final_audio, 44100)
+    
+    # Save compressed audio
+    compressed_output_file = output_dir / "final_output_compressed.wav"
+    output.append(f"Saving compressed audio (duration: {len(final_compressed_audio)/44100:.2f} seconds)")
+    sf.write(compressed_output_file, final_compressed_audio, 44100)
     
     minutes, seconds = get_duration(total_start)
     output.append(f"Done! Total processing time: {minutes} minutes and {seconds} seconds")
     
     progress(1.0, desc="Processing complete")
-    return "\n".join(output), str(output_file)
+    return "\n".join(output), str(output_file), str(compressed_output_file)
 
 # Create the Gradio interface
 with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
@@ -591,7 +664,13 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
                     
                     with gr.Group():
                         output_log = gr.Textbox(label="Processing Log", lines=10)
-                        output_audio = gr.Audio(label="Generated Audio")
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("### Original Audio")
+                                output_audio = gr.Audio(label="Generated Audio")
+                            with gr.Column():
+                                gr.Markdown("### Compressed Audio")
+                                output_audio_compressed = gr.Audio(label="Compressed Audio")
         
         with gr.TabItem("Generate Dialogue"):
             with gr.Row():
@@ -625,7 +704,7 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
     # Auto-transcribe when audio is uploaded (only if text field is empty)
     audio_prompt.change(
         fn=on_audio_upload,
-        inputs=[audio_prompt, hf_token, text_prompt],  # Added text_prompt to inputs
+        inputs=[audio_prompt, hf_token, text_prompt],
         outputs=text_prompt
     )
     
@@ -659,7 +738,7 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
         hf_token
     ]
     
-    outputs = [output_log, output_audio]
+    outputs = [output_log, output_audio, output_audio_compressed]
     
     generate_button.click(
         fn=generate_audio, 
@@ -682,6 +761,7 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
         [dialogue_text]
     )
     
+
     example_url = "https://en.wikipedia.org/wiki/Artificial_intelligence"
     
     gr.Examples(
@@ -697,6 +777,7 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
     - WhisperX requires significant processing power - transcription will be much faster with a GPU.
     - First-time WhisperX usage will download models which may take several minutes.
     - Make sure KoboldCPP server is running on http://localhost:5001 for the dialogue generation feature.
+    - **Compressed Audio**: A dynamically compressed version of the audio is now available, which is ideal for podcasting as it maintains more consistent volume levels.
     """)
 
 if __name__ == "__main__":
