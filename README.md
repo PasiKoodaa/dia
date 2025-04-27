@@ -19,6 +19,15 @@ python App-LongGeneration.py
 https://github.com/user-attachments/assets/fa4a429b-1d1a-454a-a4a4-2d56fcf10909
 
 
+The V2 version (App-LongGenerationV2.py) is a quick experiment designed to integrate automatic transcription (via WhisperX) and automatic dialogue text generation (using the KoboldCpp server). The quality of the dialogue text generation depends on LLM used – in this case, LongWriter-glm4-9b.Q4_K_M.gguf. It's advisable to avoid using exclamation points in the dialogue, as they tend to degrade the overall quality. To use the V2 version, you will need to install the following dependencies:
+```
+pip install whisperx
+pip install beautifulsoup4
+```
+
+https://github.com/user-attachments/assets/cc7c9f89-d972-4fa7-a0e5-0f954c1075a5
+
+
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 <p align="center">
 <a href="https://github.com/nari-labs/dia">
