@@ -67,7 +67,7 @@ def send_to_koboldcpp(text):
     """Send text to KoboldCPP server and get generated dialogue"""
     url = "http://localhost:5001/api/v1/generate"
     
-    system_prompt = "\nEND\n\nYour mission: Create a dialogue between two people in a podcast format based on the previous article. [S1], the host, and [S2], the guest speaker is an expert in the field but not the author of the paper, should engage in a conversation to discuss and simplify the paper's content for the listeners. Allowed verbal tags in created dialogue are: (laughs), (sighs), (gasps), (coughs), (groans), (sniffs). Exclamation points are not allowed. Speaker shouldn't reference to another spearker with tag [S1] or [S2]. Remember to create the dialogue in form [S1] dialogue [S2] dialogue"
+    system_prompt = "\nEND\n\nYour mission: Create a dialogue between two people in a podcast format based on the previous article. [S1], the host, and [S2], the guest speaker is an expert in the field but not the author of the paper, should engage in a conversation to discuss and simplify the paper's content for the listeners. Allowed verbal tags in created dialogue are: (laughs), (sighs), (gasps), (coughs), (groans), (sniffs). Exclamation points are not allowed. Speaker shouldn't reference to another spearker with tag [S1] or [S2] or by a first name, only by 'guest' or 'expert'. Remember to create the dialogue in form [S1] dialogue [S2] dialogue"
     
     full_text = text + system_prompt
     
@@ -493,8 +493,43 @@ def generate_audio(
         # Generate audio for this chunk
         start_time = time.time()
         try:
-            # Audio generation with retry logic
-            audio = generate_with_retry(model, chunk, audio_prompt, args)
+            # Generate audio with memory cleanup
+            audio = None
+            retries = 0
+            max_retries = 2
+            
+            while retries <= max_retries:
+                with warnings.catch_warnings(record=True) as w:
+                    warnings.simplefilter("always")
+                    
+                    # Use separate inference mode context for better cleanup
+                    with torch.inference_mode():
+                        audio = model.generate(
+                            text=chunk,
+                            max_tokens=args.tokens_per_chunk,
+                            cfg_scale=args.cfg_scale,
+                            temperature=args.temperature,
+                            top_p=args.top_p,
+                            cfg_filter_top_k=args.cfg_filter_top_k,
+                            use_torch_compile=True,  # Changed to False to prevent caching
+                            audio_prompt=audio_prompt
+                        )
+                    
+                    # Force garbage collection after generation
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    
+                    # Check for clamping warning
+                    clamping_warning = any("Clamping" in str(warning.message) for warning in w)
+                    if clamping_warning:
+                        output.append("[red]⚠️ Clamping warning caught. Retrying generation...[/]")
+                        retries += 1
+                        continue
+                    else:
+                        break
+                        
+            if retries > max_retries:
+                output.append("[red]⚠️ Max retries reached. Using last generated audio.[/]")
             
             # Apply speed adjustment
             if speed != 1.0:
@@ -515,15 +550,34 @@ def generate_audio(
             compressed_audio = apply_compression(audio, threshold=-20, ratio=4)
             sf.write(compressed_chunk_file, compressed_audio, 44100)
             
+            # Free memory from audio arrays
+            audio = None
+            compressed_audio = None
+            
+            # Force garbage collection
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             # Generation statistics
             minutes, seconds = get_duration(start_time)
             if minutes > 0:
-                output.append(f"Generated chunk {i+1} (duration: {len(audio)/44100:.2f} seconds) - Processed in {minutes} minutes and {seconds} seconds")
+                output.append(f"Generated chunk {i+1} - Processed in {minutes} minutes and {seconds} seconds")
             else:
-                output.append(f"Generated chunk {i+1} (duration: {len(audio)/44100:.2f} seconds) - Processed in {seconds} seconds")
+                output.append(f"Generated chunk {i+1} - Processed in {seconds} seconds")
         
         except Exception as e:
             output.append(f"Error processing chunk {i+1}: {e}")
+            # Ensure cleanup even on error
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    
+    # Clean up the model to free VRAM
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     # Combine all audio files
     progress(0.8, desc="Combining audio segments")
@@ -564,6 +618,15 @@ def generate_audio(
     
     minutes, seconds = get_duration(total_start)
     output.append(f"Done! Total processing time: {minutes} minutes and {seconds} seconds")
+    
+    # Final cleanup
+    all_audio = None
+    all_compressed_audio = None
+    final_audio = None
+    final_compressed_audio = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
     progress(1.0, desc="Processing complete")
     return "\n".join(output), str(output_file), str(compressed_output_file)
