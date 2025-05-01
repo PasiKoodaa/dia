@@ -10,6 +10,7 @@ import soundfile as sf
 import whisperx
 import gc
 import requests
+import random
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from dia.model import Dia
@@ -18,6 +19,17 @@ from rich.console import Console
 from scipy import signal
 
 console = Console()
+
+def set_seed(seed: int):
+    """Sets the random seed for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def is_url(text):
     """Check if the provided text is a URL"""
@@ -55,7 +67,7 @@ def send_to_koboldcpp(text):
     """Send text to KoboldCPP server and get generated dialogue"""
     url = "http://localhost:5001/api/v1/generate"
     
-    system_prompt = "\nEND\n\nYour mission: Create a dialogue between two people in a podcast format based on the previous article. [S1], the host, and [S2], the guest speaker is an expert in the field but not the author of the paper, should engage in a conversation to discuss and simplify the paper's content for the listeners. Allowed verbal tags in created dialogue are: (laughs), (sighs), (gasps), (coughs), (groans), (sniffs), (inhales), (exhales), (whistles). Exclamation points are not allowed. Speaker shouldn't reference to another spearker with tag [S1] or [S2]. Remember to create the dialogue in form [S1] dialogue [S2] dialogue"
+    system_prompt = "\nEND\n\nYour mission: Create a dialogue between two people in a podcast format based on the previous article. [S1], the host, and [S2], the guest speaker is an expert in the field but not the author of the paper, should engage in a conversation to discuss and simplify the paper's content for the listeners. Allowed verbal tags in created dialogue are: (laughs), (sighs), (gasps), (coughs), (groans), (sniffs). Exclamation points are not allowed. Speaker shouldn't reference to another spearker with tag [S1] or [S2]. Remember to create the dialogue in form [S1] dialogue [S2] dialogue"
     
     full_text = text + system_prompt
     
@@ -381,6 +393,7 @@ def generate_audio(
     temperature=1.3, 
     top_p=0.95, 
     cfg_filter_top_k=30,
+    seed=500,
     audio_prompt=None,
     text_prompt="",
     hf_token="",
@@ -430,7 +443,7 @@ def generate_audio(
     progress(0.1, desc="Loading model")
     start_time = time.time()
     try:
-        model = Dia.from_pretrained(model_name, compute_dtype="float16", device=device)
+        model = Dia.from_pretrained(model_name, compute_dtype="bfloat16", device=device)
         output.append(f"Model loaded in {time.time() - start_time:.2f} seconds")
     except Exception as e:
         output.append(f"Error loading model: {e}")
@@ -444,9 +457,12 @@ def generate_audio(
         top_p=top_p,
         cfg_filter_top_k=cfg_filter_top_k,
         speed=speed,
+        seed=seed,
         silence=silence
     )
     
+    set_seed(seed)
+
     # Generate audio for each chunk
     tmp_files = []
     compressed_tmp_files = []
@@ -633,6 +649,15 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
                             step=5, 
                             label="CFG Filter Top K"
                         )
+
+                        seed = gr.Number(
+                            label ="Seed", 
+                            precision=0, 
+                            value=500, 
+                            step=1, 
+                            interactive=True,
+                            info="Change seed to get different outputs"
+                        )
                     
                     with gr.Group():
                         gr.Markdown("### Voice Cloning (Optional)")
@@ -733,6 +758,7 @@ with gr.Blocks(title="Dia TTS - Dialogue Text to Speech") as app:
         temperature, 
         top_p, 
         cfg_filter_top_k,
+        seed,
         audio_prompt,
         text_prompt,
         hf_token
