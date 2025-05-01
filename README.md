@@ -31,11 +31,15 @@ https://github.com/user-attachments/assets/cc7c9f89-d972-4fa7-a0e5-0f954c1075a5
 
 Findings:
 
-    The first name mentioned in the dialogue text can influence the gender of the speaker. For example: [S1] "Welcome to the show, Anne Lastname" → leads [S2] to be a female.
-    Some final words are cut off prematurely, likely due to limitations of the model.
-    Gemma-3-4B performs well in generating dialogue text.
-    Voice cloning does not produce identical voices across different generation instances.
-    When the input text is too long, the generated voice tends to become excessively fast and inconsistent.
+The first name mentioned in the dialogue text can influence the gender of the speaker. For example: [S1] "Welcome to the show, Anne Lastname" → leads [S2] to be a female.
+
+Some final words are cut off prematurely, likely due to limitations of the model.
+
+Gemma-3-4B performs well in generating dialogue text.
+
+Voice cloning does not produce identical voices across different generation instances.
+
+When the input text is too long, the generated voice tends to become excessively fast and inconsistent.
 
 
 
